@@ -32,8 +32,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 from std_srvs.srv import Empty
 import tensorflow
-from tensorflow.keras.layers import Dense
-from tensorflow.keras.layers import Input
+from tensorflow.keras.layers import Dense, Input, Dropout
 from tensorflow.keras.losses import MeanSquaredError
 from tensorflow.keras.models import load_model
 from tensorflow.keras.models import Sequential
@@ -41,6 +40,8 @@ from tensorflow.keras.optimizers import Adam
 
 from turtlebot3_msgs.srv import Dqn
 
+from tensorflow.keras.regularizers import l2
+from db.db_helper import DB, DB_CONFIG
 
 tensorflow.config.set_visible_devices([], 'GPU')
 
@@ -71,6 +72,8 @@ class DQNAgent(Node):
 
     def __init__(self, stage_num, max_training_episodes):
         super().__init__('dqn_agent')
+
+        self.db = DB(**DB_CONFIG)
 
         self.stage = int(stage_num)
         self.train_mode = True
@@ -139,6 +142,9 @@ class DQNAgent(Node):
         self.process()
 
     def process(self):
+        # 머신러닝 프로세스 실행
+        run_id = self.db.insert_run()
+
         self.env_make()
         time.sleep(1.0)
 
@@ -197,6 +203,19 @@ class DQNAgent(Node):
                     param_keys = ['epsilon', 'step']
                     param_values = [self.epsilon, self.step_counter]
                     param_dictionary = dict(zip(param_keys, param_values))
+
+                    episode_info = {
+                        'run_id' : run_id,
+                        'episode_id' : episode,
+                        'score' : score,
+                        'memory_length' : len(self.replay_memory),
+                        'epsilon' : self.epsilon,
+                        'step_count' : local_step
+                    }
+
+                    if self.db.insert_episode(episode_info):
+                        print('insert_episode success')
+
                     break
 
                 time.sleep(0.01)
@@ -282,8 +301,10 @@ class DQNAgent(Node):
     def create_qnetwork(self):
         model = Sequential()
         model.add(Input(shape=(self.state_size,)))
-        model.add(Dense(512, activation='relu'))
+        model.add(Dense(512, activation='relu', kernel_regularizer=l2(0.01))) # 과적합 방지 L2규제 추가
+        model.add(Dropout(0.2)) # 과적합 방지
         model.add(Dense(256, activation='relu'))
+        model.add(Dropout(0.2)) # 과적합 방지
         model.add(Dense(128, activation='relu'))
         model.add(Dense(self.action_size, activation='linear'))
         model.compile(loss=MeanSquaredError(), optimizer=Adam(learning_rate=self.learning_rate))
